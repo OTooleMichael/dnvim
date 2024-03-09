@@ -750,8 +750,30 @@ function M.setup()
 	print("hello")
 end
 
+function M.install_alias()
+  local alias = M.alias_string()
+  local rc_files = {"~/.zshrc", "~/.bashrc"}
+  -- check each of the rc files, if they exist and don't contain the alias, add it 
+  for _, rc_file in ipairs(rc_files) do
+    local rc_file_path = vim.fn.expand(rc_file)
+    if vim.fn.filereadable(rc_file_path) == 1 then
+      local file_content = vim.fn.readfile(rc_file_path)
+      local has_alias = false
+      for _, line in ipairs(file_content) do
+        if string.find(line, alias) then
+          has_alias = true
+        end
+      end
+      if not has_alias then
+        print("Writing alias to " .. rc_file_path)
+        vim.fn.writefile({alias}, rc_file_path, "a")
+      end
+    end
+  end
+end
+
 function M.alias_string()
-  return 'alias dvm="nvim --headless -c \'lua require(\"dnvim\").cli()\' -- "'
+  return 'alias dnvim="nvim --headless -n -c \'lua require(\\"dnvim\\").cli()\' -- "'
 end
 
 function M.list_builds()
