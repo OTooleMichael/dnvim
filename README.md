@@ -43,6 +43,7 @@ Note: everything will try to run for the current docker user, and depending on y
 
 ## Commands
 
+```
 run <name>: Ensure nvim is installed and run it in the container
 --program, -p [default: "nvim"]
 --build, -b [default: false]
@@ -57,3 +58,4 @@ list_builds: List all builds - dnvim keeps a cache of nvim instances that it bui
 list: List all running containers (just docker ps)
 
 help: Show help
+```
