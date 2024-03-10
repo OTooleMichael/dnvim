@@ -81,7 +81,39 @@ local function write_json_file(file_path, data)
 	return file:close()
 end
 
+---@generic T
+---@param t1 T
+---@param t2 T
+---@return T
+local function merge_table_impl(t1, t2)
+	for k, v in pairs(t2) do
+		if type(v) == "table" then
+			if type(t1[k]) == "table" then
+				merge_table_impl(t1[k], v)
+			else
+				t1[k] = v
+			end
+		else
+			t1[k] = v
+		end
+	end
+end
+
+---Merge multiple tables into one
+---@generic T
+---@vararg T
+---@return T
+local function merge_tables(...)
+	local out = {}
+	for i = 1, select("#", ...) do
+		merge_table_impl(out, select(i, ...))
+	end
+	return out
+end
+
 M = {
+	noop = function() end,
+	merge_tables = merge_tables,
 	read_json_file = read_json_file,
 	write_json_file = write_json_file,
 	split_lines = split_lines,

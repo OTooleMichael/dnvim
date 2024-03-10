@@ -1,9 +1,7 @@
 local utils = require("dnvim.utils")
+local config = require("dnvim.config")
 local parse_args = require("dnvim.parse_args")
-local config_path = vim.fn.stdpath("config")
 local data_path = vim.fn.stdpath("data")
-local user_config = string.format("%s/dnvim.json", config_path)
-local cache_config = string.format("%s/dnvim.json", data_path)
 local folderPath = utils.ensure_folder(
   string.format("%s/dnvim", data_path)
 )
@@ -178,6 +176,46 @@ function DockerContainer:exec(command, working_dir)
   return res
 end
 
+DnvimGroup = vim.api.nvim_create_augroup("DnvimGroup", { clear = true }) -- Create an autocommand group named "YankCopyGroup" and clear any existing autocommands in the group
+
+function DockerContainer:ensure_copy_watcher()
+  -- create background function that get the last hello every 1/2 second
+  print("Start listening for copy ".. self.id .. ":" .. DNVIM_COPY_FILE)
+  local docker_watch_file = DNVIM_COPY_FILE
+  self:exec("sh -c " .. vim.fn.shellescape("touch " .. docker_watch_file))
+  local timer = vim.loop.new_timer()
+  if not timer then
+    print("Failed to create dnvim copy watcher")
+    return
+  end
+  local container = self
+  local cb_pend = false
+  local res = ""
+  timer:start(0, 1000, vim.schedule_wrap(function()
+    if cb_pend then
+      return
+    end
+    cb_pend = true
+    local value = DockerContainer.exec(container, "stat --format '%Y' " .. docker_watch_file).output
+    if res == "" then
+      res = value
+      cb_pend = false
+      return
+    end
+    if res == value then
+      cb_pend = false
+      return
+    end
+    res = value
+    cb_pend = false
+    local data = container:exec("cat " .. docker_watch_file).output
+    print("\n")
+    print(data)
+    print("\n")
+    vim.fn.system("pbcopy", data)
+  end))
+end
+
 function DockerContainer:store(local_destination)
   local sys_info = self:system_info()
   local from_path = sys_info.home() .. "/neovim/"
@@ -252,7 +290,8 @@ end
 
 ---@return table
 function DockerContainer:nvim_version()
-  local res = self:exec("nvim --version")
+  local nvim_location = config.load_config().docker.nvim_location
+  local res = self:exec(nvim_location .. " --version")
   local version_lines = utils.split_lines(res.output)
   local version = version_lines[1]
   local luajit = version_lines[3]
@@ -268,8 +307,23 @@ end
 ---@return number
 function DockerContainer:enter(command)
   print("\n")
+  local job_id = nil
+  if config.load_config().docker.copy_watcher then
+    print("Starting copy watcher: copy_listener " .. self.id)
+    job_id = vim.fn.jobstart(
+    "nvim --headless -n -c 'lua require(\"dnvim\").cli()' -- copy_listener " .. self.id,
+    {
+      on_stdout = utils.noop,
+      on_stderr = utils.noop,
+      stderr_buffered = false,
+      stdout_buffered = false,
+    })
+  end
   local program = command or (self:system_info().installed["bash"] and "bash" or "sh")
   os.execute("docker exec -it " .. self.id .. " " .. program)
+  if job_id then
+    vim.fn.jobstop(job_id)
+  end
   return 0
 end
 
@@ -361,13 +415,7 @@ function DockerContainer:sync_config(overwrite)
   local config_folder = sys_info.home() .. "/.config"
   local exit_code = 0
   exit_code = self:exec("mkdir -p " ..config_folder).exit_code
-  if exit_code ~= 0 then
-      return exit_code
-  end
   exit_code = self:exec("mkdir -p " .. sys_info.home() .. "/.local/share/nvim").exit_code
-  if exit_code ~= 0 then
-      return exit_code
-  end
   if not overwrite and self:file_exists(config_folder .. "/nvim", true) then
       print("Config already exists, skipping")
       return 0
@@ -377,6 +425,16 @@ function DockerContainer:sync_config(overwrite)
   self:exec("rm -rf " ..config_folder .. "/nvim")
   print("Remove .local/share/nvim")
   self:exec("rm -rf " .. sys_info.home() .. "/.local/share/nvim")
+  self:exec("rm -rf " .. sys_info.home() .. "/lua")
+  self:exec("mkdir -p " .. sys_info.home() .. "/.local/share/nvim")
+  local tmp_file = "/tmp/dnvim.json"
+  local _config = config.load_config("cache")
+  _config._is_docker = true
+  utils.write_json_file(tmp_file, _config)
+  self:copy_to_docker(
+    tmp_file,
+    sys_info.home() .. "/.local/share/nvim/dnvim.json"
+  )
   print("Syncing .config/nvim")
   local nvim_folder = local_home .. "/.config/nvim"
   exit_code = self:copy_to_docker(nvim_folder, config_folder)
@@ -384,6 +442,7 @@ function DockerContainer:sync_config(overwrite)
       print("Failed to sync .config/nvim")
       return exit_code
   end
+  self:copy_to_docker(local_home .. "/lua", sys_info.home() .. "/lua")
   print("Syncing .config/github-copilot")
   self:copy_to_docker(local_home .. "/.config/github-copilot", config_folder)
   return 0
@@ -429,10 +488,10 @@ end
 
 ---@return number
 function DockerContainer:link_nvim()
-  print("Linking NVIM")
   local nvim_bin = self:system_info().home() .. "/neovim/build/bin/nvim"
-  local exit_code = self:exec("sh -c " .. vim.fn.shellescape("ln -sf " .. nvim_bin .. " /bin/nvim")).exit_code
-  return exit_code or self:exec("nvim --version").exit_code
+  local nvim_location = config.load_config().docker.nvim_location
+  local exit_code = self:exec("sh -c " .. vim.fn.shellescape("ln -sf " .. nvim_bin .. " " .. nvim_location)).exit_code
+  return exit_code or self:exec(nvim_location .. " --version").exit_code
 end
 
 
@@ -463,6 +522,7 @@ function DockerContainer:system_info()
     sh = self:exec("which sh").exit_code == 0,
   }
 
+  local needed_envs = {"HOME"}
   local envs = {}
   local env_str = self:exec("printenv").output
   for _, line in ipairs(utils.split_lines(env_str)) do
@@ -470,7 +530,11 @@ function DockerContainer:system_info()
       for part in string.gmatch(line, "[^=]+") do
           parts[#parts + 1] = part
       end
-      envs[parts[1]] = parts[2]:gsub("^%s*(.-)%s*$", "%1")
+      if utils.find(needed_envs, function(value)
+          return value == parts[1]
+      end) then
+          envs[parts[1]] = parts[2]:gsub("^%s*(.-)%s*$", "%1")
+      end
   end
   local find_res = string.find(interperter, "ld-linux-aarch64.so.1", 1, true)
   self._sys_info = {
@@ -550,18 +614,18 @@ end
 
 ---@param name string
 ---@return DockerContainer | nil
-local function get_conatiner_by_name(name)
+local function get_container_by_name(name)
   local containers = docker_ps()
   local matching_containers = utils.filter(containers, function(container)
-    return string.find(container.name, name) ~= nil
+    return string.find(container.name, name) ~= nil or container.id == name
   end)
   if #matching_containers == 0 then
-    print("No matching containers found")
+    print("No matching containers found: ", name)
     docker_print_containers(containers)
     return
   end
   if #matching_containers > 1 then
-    print("Multiple matching containers found")
+    print("Multiple matching containers found: ", name)
     docker_print_containers(matching_containers)
     return
   end
@@ -571,7 +635,7 @@ end
 
 ---@return number
 local function command_run(params)
-  local container = get_conatiner_by_name(params.name)
+  local container = get_container_by_name(params.name)
   if not container then
     return 1
   end
@@ -609,14 +673,10 @@ local function command_run(params)
           print("Failed to load build")
           return exit_code
       end
-      exit_code = container:link_nvim()
-      if exit_code ~= 0 then
-          print("Failed to link nvim")
-          return exit_code
-      end
   end
   if params.build then
-    exit_code = container:build_neovim(nil, true)
+    local neovim_version = config.load_config().neovim.preferred_version
+    exit_code = container:build_neovim(neovim_version, true)
     if exit_code ~= 0 then
         print("Failed to build neovim")
         return exit_code
@@ -642,6 +702,11 @@ local function command_run(params)
     registry:add(build_desc)
     registry:list()
   end
+  exit_code = container:link_nvim()
+  if exit_code ~= 0 then
+      print("Failed to link nvim")
+      return exit_code
+  end
   return container:enter(params.program)
 end
 
@@ -656,6 +721,99 @@ CommandStructures_ = {
       registry:load()
       registry:list()
       return 0
+    end
+  ),
+  parse_args.Command:new(
+    "run_server",
+    {
+      desc = "Run a neovim server in the container",
+      args = {
+        type = ".",
+        key = "name",
+      },
+      options = {
+        name = {
+          required = true,
+          aliases = {"n"},
+        },
+        build = {
+          desc = "Build neovim in the container",
+          default = false,
+          aliases = {"b"},
+        },
+        host = {
+          desc = "Host to run the server on",
+          default = function ()
+            return config.load_config().neovim_server.host
+          end,
+          aliases = {"h"},
+        },
+        port = {
+          desc = "Port to run the server on",
+          default = function ()
+            return config.load_config().neovim_server.port
+          end,
+          aliases = {"p"},
+        },
+        no_proxy = {
+          desc = "Don't use a socat proxy. Otherswise verb/socat will be booted as a new container in the same network to proxy the connection to the container",
+          default = function ()
+            return config.load_config().neovim_server.use_socat_proxy
+          end,
+        },
+      },
+    },
+    function(params)
+      params.program = "sh -c " .. vim.fn.shellescape("nvim --headless --listen " .. params.host .. ":" .. params.port)
+      local container = get_container_by_name(params.name)
+      if not container then
+        return 1
+      end
+      local docker_ip = container:exec("hostname -i").output
+      print("Found IP: " .. docker_ip)
+      local handle_output = function(_, data, _)
+        print(data)
+      end
+      print(string.format("Connect to with `nvim --remote-ui --server localhost:%s`", params.port))
+      print("  wait for server to be ready before connecting")
+      if params.no_proxy then
+        return command_run(params)
+      end
+      local command = "docker run --rm -p ".. params.port .. ":1234 verb/socat TCP-LISTEN:1234,fork TCP-CONNECT:" .. docker_ip .. ":" .. params.port
+      print("Socat start: " .. command)
+      local job_id = vim.fn.jobstart(command, {
+        on_stdout = handle_output,
+        on_stderr = handle_output,
+        stderr_buffered = false,
+        stdout_buffered = false,
+      })
+      command_run(params)
+      vim.fn.jobstop(job_id)
+      return 0
+    end
+  ),
+  parse_args.Command:new(
+    "copy_listener",
+    {
+      desc = "Start a copy listener in the container",
+      args = {
+        type = ".",
+        key = "name",
+      },
+      options = {
+        name = {
+          required = true,
+          aliases = {"n"},
+        },
+      },
+    },
+    function(params)
+      local container = get_container_by_name(params.name)
+      if not container then
+        return 1
+      end
+      container:ensure_copy_watcher()
+      return -1
     end
   ),
   parse_args.Command:new(
@@ -678,7 +836,9 @@ CommandStructures_ = {
         },
         program = {
           desc = "Command/program to run in the container",
-          default = "nvim",
+          default = function ()
+            return config.load_config().docker.nvim_location
+          end,
           aliases = {"p"},
         },
       },
@@ -702,13 +862,15 @@ CommandStructures_ = {
         },
         program = {
           desc = "Command/program to run in the container",
-          default = "nvim",
+          default = function ()
+            return config.load_config().docker.nvim_location
+          end,
           aliases = {"p"},
         },
       },
     },
     function(params)
-      local container = get_conatiner_by_name(params.name)
+      local container = get_container_by_name(params.name)
       if not container then
         return 1
       end
@@ -744,36 +906,72 @@ for _, command in ipairs(CommandStructures_) do
 end
 
 
+DNVIM_COPY_FILE = "/tmp/dnvim_copy_watcher.txt"
 
 local M = {}
-function M.setup()
-	print("hello")
+
+local create_yank_listener = function()
+  local _config = config.load_config()
+  if not _config.docker.copy_watcher then
+    return
+  end
+  vim.api.nvim_create_autocmd("TextYankPost", { -- Create an autocommand for the "TextYankPost" event
+    pattern = "*", -- Match any pattern
+    group = DnvimGroup, -- Assign the autocommand to the "YankCopyGroup" group
+    callback = function()
+      local match = utils.find(_config.docker.copy_watcher_registries, function(value)
+        return value == vim.v.event.regname
+      end)
+      if not match then
+        return
+      end
+      local data = vim.v.event.regcontents
+      local bin_loc = vim.fn.system("which pbcopy")
+      if bin_loc ~= "" and not _config._is_docker then
+        vim.fn.system("pbcopy", data)
+        return
+      end
+      vim.fn.writefile(data, DNVIM_COPY_FILE)
+    end,
+  })
+end
+
+---@param user_config ?Config
+function M.setup(user_config)
+  local cache = config.load_config("cache")
+  user_config._is_docker = cache._is_docker
+  config.save_config(user_config or {})
+  local _config = config.load_config()
+  if _config.install_alias then
+    M.install_alias()
+  end
+  create_yank_listener()
 end
 
 function M.install_alias()
-  local alias = M.alias_string()
+  local suffix = "#dnvim-alias"
+  local alias = M.alias_string() .. " " .. suffix
   local rc_files = {"~/.zshrc", "~/.bashrc"}
-  -- check each of the rc files, if they exist and don't contain the alias, add it 
+  -- check each of the rc files, if they exist 
+  -- if remove any lines that contain the suffix and then add the alias
   for _, rc_file in ipairs(rc_files) do
     local rc_file_path = vim.fn.expand(rc_file)
     if vim.fn.filereadable(rc_file_path) == 1 then
-      local file_content = vim.fn.readfile(rc_file_path)
-      local has_alias = false
-      for _, line in ipairs(file_content) do
-        if string.find(line, alias) then
-          has_alias = true
+      local file_content = utils.filter(
+        vim.fn.readfile(rc_file_path),
+        function(line)
+          return not string.find(line, suffix, nil, true)
         end
-      end
-      if not has_alias then
-        print("Writing alias to " .. rc_file_path)
-        vim.fn.writefile({alias}, rc_file_path, "a")
-      end
+      )
+      table.insert(file_content, alias)
+      vim.fn.writefile(file_content, rc_file_path, "s")
     end
   end
 end
 
 function M.alias_string()
-  return 'alias dnvim="nvim --headless -n -c \'lua require(\\"dnvim\\").cli()\' -- "'
+  local _config = config.load_config()
+  return ('alias %s="nvim --headless -n -c \'lua require(\\"dnvim\\").cli()\' -- "'):format(_config.alias_name)
 end
 
 function M.list_builds()
@@ -785,11 +983,14 @@ function M.cli()
     local command_func = parse_args.parse_command(args, CommandStructures)
     if command_func == nil then
       print("Invalid command args: ")
-      vim.inspect(args)
+      vim.print(args)
       command_help({})
       return utils.exit_with_code(1)
     end
     local exit_code = command_func:exec()
+    if exit_code < 0 then
+      return
+    end
     return utils.exit_with_code(exit_code or 0)
 end
 return M

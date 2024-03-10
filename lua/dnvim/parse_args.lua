@@ -27,7 +27,7 @@ local parse_positional = function(args)
 		local arg = args[i]
 		if string.sub(arg, 1, 1) == "-" then
 			-- strip leading -- and assign to pending_option
-			pending_option = string.gsub(arg, "^-+", "")
+			pending_option = arg:gsub("^-+", ""):gsub("-+", "_")
 			output.options[pending_option] = true
 			goto continue
 		end
@@ -126,7 +126,11 @@ function Command:parse_args(parsed_args)
 	end
 	for option_name, value in pairs(self.options) do
 		if value.default and not params[option_name] then
-			params[option_name] = value.default
+			if type(value.default) == "function" then
+				params[option_name] = value.default()
+			else
+				params[option_name] = value
+			end
 		end
 	end
 	self.params = params

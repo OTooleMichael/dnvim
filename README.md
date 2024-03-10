@@ -13,10 +13,16 @@ dnvim loads everything required to have nvim run in your docker and copies your 
 ```lua
 {
   "OTooleMichael/dnvim",
+  config = function()
+    require("dnvim").setup({
+      -- Adds dnvim to your sh .rc file
+      install_alias = true,
+    })
+  end,
 }
 ```
 
-- in Neovim run `:lua require("dnvim").install_alias()` : This adds the following to your bashrc / zshrc
+- (skip if install_alias = true): Add the following to your bashrc / zshrc
   `alias dnvim="nvim --headless -n -c 'lua require(\"dnvim\").cli()' -- "`
 - Open a new terminal
 - Run it `dnvim --help`
