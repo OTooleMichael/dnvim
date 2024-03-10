@@ -179,7 +179,6 @@ end
 DnvimGroup = vim.api.nvim_create_augroup("DnvimGroup", { clear = true }) -- Create an autocommand group named "YankCopyGroup" and clear any existing autocommands in the group
 
 function DockerContainer:ensure_copy_watcher()
-  -- create background function that get the last hello every 1/2 second
   print("Start listening for copy ".. self.id .. ":" .. DNVIM_COPY_FILE)
   local docker_watch_file = DNVIM_COPY_FILE
   self:exec("sh -c " .. vim.fn.shellescape("touch " .. docker_watch_file))

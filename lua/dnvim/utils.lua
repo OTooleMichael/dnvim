@@ -97,6 +97,7 @@ local function merge_table_impl(t1, t2)
 			t1[k] = v
 		end
 	end
+	return t1
 end
 
 ---Merge multiple tables into one
