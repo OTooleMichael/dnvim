@@ -616,7 +616,7 @@ end
 local function get_container_by_name(name)
   local containers = docker_ps()
   local matching_containers = utils.filter(containers, function(container)
-    return string.find(container.name, name) ~= nil or container.id == name
+    return string.find(container.name, name, nil, true) ~= nil or container.id == name
   end)
   if #matching_containers == 0 then
     print("No matching containers found: ", name)
