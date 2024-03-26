@@ -355,7 +355,6 @@ function DockerContainer:install(packages, lean)
   if install_system == Installer.APT then
     command = "apt-get install -y"
   end
-  command = "apt-get install -y"
   if lean and install_system == "apt-get" then
       command = command .. " --no-install-recommends"
   end
