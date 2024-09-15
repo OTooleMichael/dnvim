@@ -132,6 +132,8 @@ end
 
 ---@enum Package 
 Package = {
+  ninja_build = "ninja-build",
+  build_essential = "build-essential",
   build_base = "build-base",
   cmake = "cmake",
   coreutils = "coreutils",
@@ -255,6 +257,8 @@ end
 ---@param overwrite boolean | nil
 ---@return number
 function DockerContainer:build_neovim(version, overwrite)
+  -- build from source
+  -- https://github.com/neovim/neovim/blob/master/BUILD.md
   version = version or "stable"
   overwrite = overwrite or false
   local exit_code = 0
@@ -263,6 +267,7 @@ function DockerContainer:build_neovim(version, overwrite)
       return 1
   end
   if sys_info.install_system == Installer.APK then
+    self:exec("apk update")
     local install_list = {
       Package.build_base,
       Package.coreutils,
@@ -273,7 +278,8 @@ function DockerContainer:build_neovim(version, overwrite)
       return 1
     end
   else
-    if self:install({ Package.gettext }) ~= 0 then
+    self:exec("apt-get update")
+    if self:install({ Package.gettext, Package.ninja_build, Package.build_essential }) ~= 0 then
       return 1
     end
   end
