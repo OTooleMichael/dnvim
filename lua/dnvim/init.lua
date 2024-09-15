@@ -267,9 +267,13 @@ function DockerContainer:build_neovim(version, overwrite)
       Package.build_base,
       Package.coreutils,
       Package.unzip,
-      Package.gettext,
+      Package.gettext_tiny_dev,
     }
     if self:install(install_list) ~= 0 then
+      return 1
+    end
+  else
+    if self:install({ Package.gettext }) ~= 0 then
       return 1
     end
   end
@@ -281,7 +285,6 @@ function DockerContainer:build_neovim(version, overwrite)
       Package.make,
       Package.cmake,
       Package.libtool,
-      Package.gettext_tiny_dev,
   })
   if exit_code ~= 0 then
       return exit_code
