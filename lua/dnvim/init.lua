@@ -137,7 +137,7 @@ Package = {
   coreutils = "coreutils",
   curl = "curl",
   gcc = "gcc",
-  gettext = "gettext-tiny",
+  gettext = "gettext",
   gettext_tiny_dev = "gettext-tiny-dev",
   git = "git",
   gpp = "g++",
@@ -267,7 +267,7 @@ function DockerContainer:build_neovim(version, overwrite)
       Package.build_base,
       Package.coreutils,
       Package.unzip,
-      Package.gettext_tiny_dev,
+      Package.gettext,
     }
     if self:install(install_list) ~= 0 then
       return 1
@@ -279,9 +279,9 @@ function DockerContainer:build_neovim(version, overwrite)
       Package.curl,
       Package.unzip,
       Package.make,
-      Package.gettext,
       Package.cmake,
       Package.libtool,
+      Package.gettext_tiny_dev,
   })
   if exit_code ~= 0 then
       return exit_code
