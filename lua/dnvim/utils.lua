@@ -39,6 +39,19 @@ end
 
 ---@generic T
 ---@param table_list T[]
+---@param el T
+---@return boolean
+local function contains(table_list, el)
+	for _, value in ipairs(table_list) do
+		if value == el then
+			return true
+		end
+	end
+	return false
+end
+
+---@generic T
+---@param table_list T[]
 ---@param func fun(value: T): boolean
 ---@return T[]
 local function filter(table_list, func)
@@ -121,6 +134,7 @@ M = {
 	ternary = ternary,
 	ensure_folder = ensure_folder,
 	find = find,
+	contains = contains,
 	filter = filter,
 	exit_with_code = exit_with_code,
 }

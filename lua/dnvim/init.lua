@@ -12,7 +12,8 @@ Installer = {
   APK = "apk",
 }
 
----@class BuildDesc 
+
+---@class BuildDesc
 ---@field arch string
 ---@field interperter string
 ---@field version string
@@ -76,12 +77,12 @@ function BuildRegistry:find(desc)
     return found
   end
   return utils.find(self.data, function(value)
-    return value.arch == desc.arch and value.interperter == desc.interperter
+    return value.arch == desc.arch and value.interperter == desc.interperter and value.version == (desc.version or value.version)
   end)
 end
 
 function BuildRegistry:save()
-  utils.write_json_file({
+  utils.write_json_file(self:filepath(), {
     data=self.data
   })
 end
@@ -129,6 +130,26 @@ function BuildRegistry:list()
   end
 end
 
+---@enum Package 
+Package = {
+  build_base = "build-base",
+  cmake = "cmake",
+  coreutils = "coreutils",
+  curl = "curl",
+  gcc = "gcc",
+  gettext = "gettext-tiny",
+  gettext_tiny_dev = "gettext-tiny-dev",
+  git = "git",
+  gpp = "g++",
+  libtool = "libtool",
+  make = "make",
+  nodejs = "nodejs",
+  npm = "npm",
+  python3 = "python3",
+  ripgrep = "ripgrep",
+  unzip = "unzip",
+  wget = "wget",
+}
 
 ---@class DockerContainer
 ---@field id string
@@ -154,7 +175,9 @@ end
 
 ---@param command string
 ---@param working_dir string | nil
-function DockerContainer:exec(command, working_dir)
+---@param silent boolean | nil
+function DockerContainer:exec(command, working_dir, silent)
+  silent = silent or false
   working_dir = working_dir or ""
   if working_dir and working_dir ~= "" then
     working_dir = " -w " .. working_dir .. " "
@@ -173,6 +196,9 @@ function DockerContainer:exec(command, working_dir)
     exit_code = shell_error_code or 0,
     output = output,
   }
+  if not silent and res.exit_code ~= 0 then
+    print(vim.inspect(res))
+  end
   return res
 end
 
@@ -222,7 +248,7 @@ function DockerContainer:store(local_destination)
     return 1
   end
   utils.ensure_folder(local_destination)
-  self:copy_from_docker(local_destination, from_path)
+  return self:copy_from_docker(from_path, local_destination)
 end
 
 ---@param version string | nil
@@ -237,36 +263,55 @@ function DockerContainer:build_neovim(version, overwrite)
       return 1
   end
   if sys_info.install_system == Installer.APK then
-    if self:install({"build-base", "coreutils", "unzip", "gettext-tiny-dev"}) ~= 0 then
+    local install_list = {
+      Package.build_base,
+      Package.coreutils,
+      Package.unzip,
+      Package.gettext_tiny_dev,
+    }
+    if self:install(install_list) ~= 0 then
       return 1
     end
   end
   exit_code = self:install({
-      "gcc",
-      "g++",
-      "curl",
-      "unzip",
-      "make",
-      "gettext",
-      "cmake",
-      "libtool",
+      Package.gcc,
+      Package.gpp,
+      Package.curl,
+      Package.unzip,
+      Package.make,
+      Package.gettext,
+      Package.cmake,
+      Package.libtool,
   })
   if exit_code ~= 0 then
       return exit_code
   end
   local zip_location = "/tmp/neovim.zip"
+  local neovim_dir = sys_info.home() .. "/neovim"
   if not self:file_exists(zip_location, false) then
       print("Downloading Neovim " .. version)
       local download_url = string.format("https://github.com/neovim/neovim/archive/refs/tags/%s.zip", version)
       exit_code = self:exec(
-          "curl -L o " .. zip_location .. " " .. download_url
+          "curl -Lo " .. zip_location .. " " .. download_url
       ).exit_code
       if exit_code ~= 0 then
-      print("Failed to download neovim")
+          print("Failed to download neovim")
           return exit_code
       end
+      self:exec("rm -rf " .. neovim_dir)
   end
-  local neovim_dir = sys_info.home() .. "/neovim"
+
+  if not self:file_exists(neovim_dir, true) then
+      local temp_dir = "/tmp/neovim"
+      self:exec("rm -rf " .. temp_dir)
+      exit_code = self:exec("unzip -o " .. zip_location .. " -d " .. temp_dir).exit_code
+      if exit_code ~= 0 then
+          print("Failed to unzip " .. zip_location)
+          return exit_code
+      end
+      self:exec("mv /tmp/neovim/neovim-".. version .. " ".. neovim_dir)
+  end
+
   self:exec("rm -rf " .. neovim_dir .. "/build")
   print("Building NVIM in your container, this can take a while...")
   exit_code = self:exec(
@@ -283,6 +328,7 @@ function DockerContainer:build_neovim(version, overwrite)
     print("Failed to install neovim")
     return exit_code
   end
+  self:exec("ln -sf " .. neovim_dir ..  "/build/bin/nvim /bin/nvim")
   print("NVIM installed")
   return 0
 end
@@ -290,7 +336,7 @@ end
 ---@return table
 function DockerContainer:nvim_version()
   local nvim_location = config.load_config().docker.nvim_location
-  local res = self:exec(nvim_location .. " --version")
+  local res = self:exec(nvim_location .. " --version --clean --noplugin")
   local version_lines = utils.split_lines(res.output)
   local version = version_lines[1]
   local luajit = version_lines[3]
@@ -343,7 +389,22 @@ function DockerContainer:install_setup()
   return self._install_setup
 end
 
+---@param packages (string | Package)[] 
+---@param lean ?boolean
+---@return number
 function DockerContainer:install(packages, lean)
+  local conf = config.load_config()
+  packages = utils.filter(packages, function(value)
+    return not utils.find(conf.docker.skip_packages, function(skip)
+      return skip == value
+    end)
+  end)
+
+  if #packages == 0 then
+    print("No packages to install")
+    return 0
+  end
+
   local s_installed = self:install_setup()
   if s_installed.exit_code ~= 0 then
     return s_installed.exit_code
@@ -370,7 +431,21 @@ end
 ---@param is_dir boolean
 ---@return boolean
 function DockerContainer:file_exists(path, is_dir)
-    return self:exec("test " .. utils.ternary(is_dir, "-d ", "-f ") .. path).exit_code == 0
+    return self:exec(
+      "test " .. utils.ternary(is_dir, "-d ", "-f ") .. path,
+      nil,
+      true
+    ).exit_code == 0
+end
+
+---@param program string
+---@return boolean
+function DockerContainer:bin_exists(program)
+    return self:exec(
+      "which " .. program,
+      nil,
+      true
+    ).exit_code == 0
 end
 
 ---@param to_docker boolean
@@ -385,6 +460,7 @@ function DockerContainer:copy(to_docker, from_path, to_path)
     }
     local value = args[utils.ternary(to_docker, 4, 3)]
     args[utils.ternary(to_docker, 4, 3)] = self.id .. ":" .. value
+    vim.print(args)
     vim.fn.system(args)
     local exit_code = vim.v.shell_error
     return exit_code or 0
@@ -423,7 +499,7 @@ function DockerContainer:sync_config(overwrite)
   self:exec("rm -rf " ..config_folder .. "/nvim")
   print("Remove .local/share/nvim")
   self:exec("rm -rf " .. sys_info.home() .. "/.local/share/nvim")
-  self:exec("rm -rf " .. sys_info.home() .. "/lua")
+  -- self:exec("rm -rf " .. sys_info.home() .. "/lua")
   self:exec("mkdir -p " .. sys_info.home() .. "/.local/share/nvim")
   local tmp_file = "/tmp/dnvim.json"
   local _config = config.load_config("cache")
@@ -440,7 +516,7 @@ function DockerContainer:sync_config(overwrite)
       print("Failed to sync .config/nvim")
       return exit_code
   end
-  self:copy_to_docker(local_home .. "/lua", sys_info.home() .. "/lua")
+  -- self:copy_to_docker(local_home .. "/lua", sys_info.home() .. "/lua")
   print("Syncing .config/github-copilot")
   self:copy_to_docker(local_home .. "/.config/github-copilot", config_folder)
   return 0
@@ -451,24 +527,24 @@ function DockerContainer:ensure_deps()
     return 1
   end
   local i_res = self:install(
-      {
-          "wget",
-          "git",
-          "ripgrep",
-      }
+    {
+      Package.wget,
+      Package.git,
+      Package.ripgrep,
+    }
   )
   if i_res ~= 0 then
       return i_res
   end
   local sys_info = self:system_info()
   if not sys_info.installed.node then
-      i_res = self:install({"nodejs", "npm"}, true)
+      i_res = self:install({Package.nodejs, Package.npm}, true)
   end
   if i_res ~= 0 then
       return i_res
   end
   if not sys_info.installed.python3 then
-      i_res = self:install({"python3"})
+      i_res = self:install({Package.python3})
   end
   return i_res
 end
@@ -500,8 +576,8 @@ function DockerContainer:system_info()
   local arch = self:exec("uname -m").output
   local user = self:exec("whoami").output
   local install_system = Installer.NONE
-  local has_apt = self:exec("which apt-get").exit_code == 0
-  local has_apk = self:exec("which apk").exit_code == 0
+  local has_apt = self:bin_exists("apt-get")
+  local has_apk = self:bin_exists("apk")
 
   if has_apt then
     install_system = Installer.APT
@@ -512,12 +588,12 @@ function DockerContainer:system_info()
 
   local interperter = self:exec("ls /lib").output
   local installed = {
-    python3 = self:exec("which python3").exit_code == 0,
-    npm = self:exec("which npm").exit_code == 0,
-    node = self:exec("which node").exit_code == 0,
-    nvim = self:exec("which nvim").exit_code == 0,
-    bash = self:exec("which bash").exit_code == 0,
-    sh = self:exec("which sh").exit_code == 0,
+    python3 = self:bin_exists("python3"),
+    npm = self:bin_exists("npm"),
+    node = self:bin_exists("node"),
+    nvim = self:bin_exists("nvim"),
+    bash = self:bin_exists("bash"),
+    sh = self:bin_exists("sh"),
   }
 
   local needed_envs = {"HOME"}
@@ -632,6 +708,55 @@ end
 
 
 ---@return number
+local function build_docker(params, skip_ensure_deps)
+  local container = get_container_by_name(params.name)
+  if not container then
+    return 1
+  end
+
+  local exit_code = 0
+  if not skip_ensure_deps then
+    exit_code = container:ensure_deps()
+    if exit_code ~= 0 then
+      print("Failed to install dependencies")
+      return exit_code
+    end
+  end
+
+  container:sync_config(params.sync_config or true)
+  local info = container:system_info()
+  local registry = BuildRegistry:new(folderPath)
+  registry:load()
+  local neovim_version = config.load_config().neovim.preferred_version
+  exit_code = container:build_neovim(neovim_version, true)
+  if exit_code ~= 0 then
+      print("Failed to build neovim")
+      return exit_code
+  end
+  local version = container:nvim_version()
+  local interperter = ""
+  if info.ld_musl_aarch64 then
+      interperter = "ld_musl_aarch64"
+  end
+  local build_desc = BuildDesc:new(
+      info.arch,
+      interperter,
+      version.version,
+      version.luajit,
+      version.compile_details,
+      container.name
+  )
+  exit_code = container:store(build_desc:path(registry.folder_path))
+  if exit_code ~= 0 then
+      print("Failed to store build")
+      return exit_code
+  end
+  registry:add(build_desc)
+  registry:list()
+  return 0
+end
+
+---@return number
 local function command_run(params)
   local container = get_container_by_name(params.name)
   if not container then
@@ -673,32 +798,8 @@ local function command_run(params)
       end
   end
   if params.build then
-    local neovim_version = config.load_config().neovim.preferred_version
-    exit_code = container:build_neovim(neovim_version, true)
-    if exit_code ~= 0 then
-        print("Failed to build neovim")
-        return exit_code
-    end
-    local version = container:nvim_version()
-    local interperter = ""
-    if info.ld_musl_aarch64 then
-        interperter = "ld_musl_aarch64"
-    end
-    local build_desc = BuildDesc:new(
-        info.arch,
-        interperter,
-        version.version,
-        version.luajit,
-        version.compile_details,
-        container.name
-    )
-    exit_code = container:store(build_desc:path(registry.folder_path))
-    if exit_code ~= 0 then
-        print("Failed to store build")
-        return exit_code
-    end
-    registry:add(build_desc)
-    registry:list()
+    local skip_ensure_deps = true
+    build_docker(params, skip_ensure_deps)
   end
   exit_code = container:link_nvim()
   if exit_code ~= 0 then
@@ -708,7 +809,58 @@ local function command_run(params)
   return container:enter(params.program)
 end
 
+
 CommandStructures_ = {
+  parse_args.Command:new(
+    "write-config",
+    {
+      desc = "Write project local config",
+      args = {
+        type = ".",
+        key = "name",
+        default = function ()
+          return config.load_config().docker.default_container_name
+        end,
+      },
+      options = {
+        name = {
+          required = true,
+          aliases = {"n"},
+        },
+        program = {
+          desc = "Command/program to run in the container",
+          default = function ()
+            return config.load_config().docker.nvim_location
+          end,
+          aliases = {"p"},
+        },
+      },
+    },
+    function(params)
+      local _config = config.load_config()
+      _config.docker.default_container_name = params.name
+      print(vim.inspect(_config))
+      config.save_config(_config, "project")
+      return 0
+    end
+  ),
+  parse_args.Command:new(
+    "cwd",
+    {
+      desc = "Install the dnvim alias",
+    },
+    function(params)
+      local cwd = vim.fn.getcwd()
+      -- Load a config from ./.nvim/dnvim.json if it exists
+      local config_path = cwd .. "/.nvim/dnvim.json"
+      if vim.fn.filereadable(config_path) ~= 1 then
+        return 1
+      end
+      local config_data = utils.read_json_file(config_path)
+      vim.print(config_data)
+      return 0
+    end
+  ),
   parse_args.Command:new(
     "list_builds",
     {
@@ -733,6 +885,9 @@ CommandStructures_ = {
         name = {
           required = true,
           aliases = {"n"},
+          default = function ()
+            return config.load_config().docker.default_container_name
+          end,
         },
         build = {
           desc = "Build neovim in the container",
@@ -815,6 +970,30 @@ CommandStructures_ = {
     end
   ),
   parse_args.Command:new(
+    "build",
+    {
+      desc = "Build neovim in the container",
+      args = {
+        type = ".",
+        key = "name",
+      },
+      options = {
+        name = {
+          required = true,
+          aliases = {"n"},
+          default = function ()
+            return config.load_config().docker.default_container_name
+          end,
+        },
+      },
+    },
+    function(params)
+      print("BUILD!")
+      vim.inspect(params)
+      return build_docker(params)
+    end
+  ),
+  parse_args.Command:new(
     "run",
     {
       desc = "Ensure nvim is installed and run it in the container",
@@ -826,6 +1005,9 @@ CommandStructures_ = {
         name = {
           required = true,
           aliases = {"n"},
+          default = function ()
+            return config.load_config().docker.default_container_name
+          end,
         },
         build = {
           desc = "Build neovim in the container",
@@ -852,6 +1034,9 @@ CommandStructures_ = {
       args = {
         type = ".",
         key = "name",
+        default = function ()
+          return config.load_config().docker.default_container_name
+        end,
       },
       options = {
         name = {
