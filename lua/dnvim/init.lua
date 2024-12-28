@@ -130,7 +130,7 @@ function BuildRegistry:list()
   end
 end
 
----@enum Package 
+---@enum Package
 Package = {
   ninja_build = "ninja-build",
   build_essential = "build-essential",
@@ -149,6 +149,7 @@ Package = {
   npm = "npm",
   python3 = "python3",
   ripgrep = "ripgrep",
+  fzf = "fzf",
   unzip = "unzip",
   wget = "wget",
 }
@@ -540,21 +541,22 @@ function DockerContainer:ensure_deps()
       Package.wget,
       Package.git,
       Package.ripgrep,
+      Package.fzf,
     }
   )
-  if i_res ~= 0 then
-      return i_res
-  end
-  local sys_info = self:system_info()
-  if not sys_info.installed.node then
-      i_res = self:install({Package.nodejs, Package.npm}, true)
-  end
-  if i_res ~= 0 then
-      return i_res
-  end
-  if not sys_info.installed.python3 then
-      i_res = self:install({Package.python3})
-  end
+  -- if i_res ~= 0 then
+  --     return i_res
+  -- end
+  -- local sys_info = self:system_info()
+  -- if not sys_info.installed.node then
+  --     i_res = self:install({Package.nodejs, Package.npm}, true)
+  -- end
+  -- if i_res ~= 0 then
+  --     return i_res
+  -- end
+  -- if not sys_info.installed.python3 then
+  --     i_res = self:install({Package.python3})
+  -- end
   return i_res
 end
 
@@ -694,6 +696,7 @@ local function command_help(params)
   end
   print("")
 end
+
 
 ---@param name string
 ---@return DockerContainer | nil
